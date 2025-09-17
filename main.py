@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 API_KEY = os.environ.get('SUB_ACCOUNT_API_KEY') # 使用子帳號的 Key
 API_SECRET = os.environ.get('SUB_ACCOUNT_SECRET') # 使用子帳號的 Secret
 SYMBOL = os.environ.get('SYMBOL', 'DOGEUSDC') 
-TARGET_LEVERAGE = int(os.environ.get('TARGET_LEVERAGE', 30)) # 設定你想要的槓桿倍數
+TARGET_LEVERAGE = int(os.environ.get('TARGET_LEVERAGE', 20)) # 設定你想要的槓桿倍數
 
 # 創建通用的 Client 客戶端
 # 由於 Client 內部邏輯是針對單一帳戶，所以直接使用子帳號的 Key 即可操作該子帳號
