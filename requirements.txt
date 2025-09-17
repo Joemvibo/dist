@@ -1,2 +1,2 @@
-python-binance
+python-binance==1.0.19  # 使用一個已知穩定的版本
 requests
