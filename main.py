@@ -1,44 +1,132 @@
-import requests
 import os
+import json
+import requests
+from time import time
+import hmac
+import hashlib
 
-# 幣安 U 本位合約 API 基礎 URL
-BASE_FUTURES_URL = 'https://fapi.binance.com'
+# --- 從 Railway 環境變數中讀取 API 資訊 ---
+# 請確保您在 Railway 的 Variables 中設定了這些鍵值
+API_KEY = os.environ.get('API_KEY')
+API_SECRET = os.environ.get('API_SECRET')
+SUB_ACCOUNT_EMAIL = os.environ.get('SUB_ACCOUNT_EMAIL')
+SYMBOL = os.environ.get('SYMBOL', 'DOGEUSDC') # 預設 DOGEUSDC
 
-def test_railway_connection():
-    """ 測試 Railway 預設 IP 是否能連接到幣安的公開端點。 """
+# 幣安 API URL
+BASE_FUTURES_URL = 'https://fapi.binance.com' # U本位合約
+BASE_SAPI_URL = 'https://api.binance.com' # 子帳號管理
+
+def sign_request(params: dict) -> str:
+    """
+    使用 HMAC SHA256 簽名方法。
+    """
+    query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
+    signature = hmac.new(
+        API_SECRET.encode('utf-8'),
+        query_string.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    return signature
+
+def fetch_api(url, params, headers, use_sapi=False):
+    """ 統一的 API 請求發送函式，處理簽名和錯誤。 """
     
-    endpoint = '/fapi/v1/exchangeInfo' # 完全公開的交易規則查詢
+    # 計算簽名
+    if API_SECRET:
+        params['timestamp'] = int(time() * 1000)
+        params['signature'] = sign_request(params)
+
+    response = requests.get(
+        url,
+        headers=headers,
+        params=params,
+        timeout=15 # 設定超時時間
+    )
+    
+    # 檢查並拋出 HTTP 錯誤
+    response.raise_for_status() 
+    return response.json()
+
+def get_leverage_bracket(symbol: str):
+    """
+    1. 呼叫 /fapi/v1/leverageBracket 取得槓桿分級表 (需要 API Key 和簽名)。
+    """
+    endpoint = '/fapi/v1/leverageBracket'
     url = BASE_FUTURES_URL + endpoint
-
-    print("--- 正在測試 Railway 預設 IP 連線 ---")
+    headers = {'X-MBX-APIKEY': API_KEY}
+    params = {'symbol': symbol}
     
+    data = fetch_api(url, params, headers)
+    
+    # 提取槓桿分級資訊並按名義價值由大到小排序
+    brackets_info = data[0]['brackets']
+    risk_levels = sorted([
+        {'maxLeverage': b['initialLeverage'], 'maxNotionalValue': float(b['notionalCap'])}
+        for b in brackets_info
+    ], key=lambda x: x['maxNotionalValue'], reverse=True)
+    
+    return risk_levels
+
+def get_sub_account_position_risk(email: str, symbol: str):
+    """
+    2. 呼叫 /sapi/v1/sub-account/futures/positionRisk 取得倉位資訊 (需要 SAPI 權限和簽名)。
+    """
+    endpoint = '/sapi/v1/sub-account/futures/positionRisk'
+    url = BASE_SAPI_URL + endpoint
+    headers = {'X-MBX-APIKEY': API_KEY}
+    
+    # futuresType=1 代表 USDT-Margined (U本位) 合約
+    params = {'email': email, 'futuresType': 1}
+    
+    data = fetch_api(url, params, headers, use_sapi=True)
+    
+    # 找出目標交易對的倉位資訊
+    doge_position = next((p for p in data if p['symbol'] == symbol), None)
+    
+    if doge_position:
+        # 返回當前倉位的名義價值 (取絕對值)
+        return abs(float(doge_position.get('notional', 0)))
+    
+    return 0.0
+
+def main():
+    if not all([API_KEY, API_SECRET, SUB_ACCOUNT_EMAIL]):
+        print("錯誤：請檢查 Railway 環境變數是否設定完整 (API keys, email)。")
+        return
+
     try:
-        # 直接發送請求，不帶任何 API Key, Secret 或簽名
-        response = requests.get(url, timeout=15)
+        print("--- 正在透過 API 查詢幣安合約槓桿資訊 ---")
         
-        # 檢查 HTTP 狀態碼
-        response.raise_for_status() 
+        # 1. 獲取風險限額分級表
+        risk_levels = get_leverage_bracket(SYMBOL)
         
-        if response.status_code == 200:
-            print("\n** 測試結果：連線成功 (200 OK) **")
-            print("Railway 的預設 IP 範圍是**可以**連接幣安的！")
-            print("您現在可以將程式碼換回原本的版本，失敗的原因很可能在於 API 權限或簽名。")
-            # 為了驗證，打印響應長度 (ExchangeInfo 通常很大)
-            print(f"成功接收數據長度: {len(response.text)} bytes")
-
-    except requests.exceptions.HTTPError as e:
-        print(f"\n** 測試結果：連線失敗 (錯誤碼 {e.response.status_code}) **")
-        print(f"響應內容: {e.response.text.strip()}")
-        if e.response.status_code == 403:
-            print("結論：Railway 的預設 IP 範圍**也被幣安的 CloudFront 封鎖**。")
-            print("您必須啟用靜態 IP 地址才能繼續。")
+        # 2. 獲取子帳號當前倉位名義價值
+        current_notional_value = get_sub_account_position_risk(SUB_ACCOUNT_EMAIL, SYMBOL)
+        
+        # 3. 判斷最大槓桿
+        max_leverage = next((level['maxLeverage'] for level in risk_levels 
+                             if current_notional_value <= level['maxNotionalValue']), 0)
+        
+        
+        print("\n--- 幣安 U 本位合約最大槓桿查詢結果 ---")
+        print(f"交易對: {SYMBOL}")
+        print(f"子帳號 Email: {SUB_ACCOUNT_EMAIL}")
+        print(f"當前倉位名義價值: {current_notional_value:.2f} USDC")
+        
+        if max_leverage > 0:
+            print(f"**子帳號目前最大可設定槓桿倍數: {max_leverage} 倍**")
         else:
-            print("發生其他 HTTP 錯誤，請檢查 URL。")
+            print("倉位名義價值超過所有風險限額。")
             
-    except requests.exceptions.RequestException as e:
-        print(f"\n** 網路或連線錯誤: {e} **")
-        print("可能是 DNS 或連線超時，請重試。")
-
+    except requests.exceptions.HTTPError as e:
+        # 捕獲所有 4xx 或 5xx 錯誤
+        print(f"\n--- API 請求失敗 (HTTP Error {e.response.status_code}) ---")
+        print(f"**幣安返回錯誤信息:** {e.response.text.strip()}")
+        print("\n請檢查以下兩點：")
+        print("1. **API 權限：** 確保主帳號 API Key 啟用了 **Enable Futures** 和 **Enable Sub Account**。")
+        print("2. **API Secret：** 確保 Railway 環境變數中的 **API_SECRET** 複製無誤。")
+    except Exception as e:
+        print(f"發生未知錯誤: {e}")
 
 if __name__ == "__main__":
-    test_railway_connection()
+    main()
