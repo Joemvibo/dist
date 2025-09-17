@@ -5,12 +5,11 @@ from time import time
 import hmac
 import hashlib
 
-# --- 【重要設定】從環境變數中讀取 API 資訊 ---
-# 在 Railway/AWS 上，您需要設定這些環境變數
+# --- 從 Railway 環境變數中讀取 API 資訊 ---
 API_KEY = os.environ.get('API_KEY')
 API_SECRET = os.environ.get('API_SECRET')
 SUB_ACCOUNT_EMAIL = os.environ.get('SUB_ACCOUNT_EMAIL')
-SYMBOL = 'DOGEUSDC' # 固定的交易對
+SYMBOL = os.environ.get('SYMBOL', 'DOGEUSDC') # 可在 Railway 變數中設定
 
 # 幣安 API URL
 BASE_FUTURES_URL = 'https://fapi.binance.com'
@@ -18,7 +17,7 @@ BASE_SAPI_URL = 'https://api.binance.com'
 
 def sign_request(params: dict) -> str:
     """
-    使用 HMAC SHA256 簽名方法，用於驗證 API 請求。
+    使用 HMAC SHA256 簽名方法。
     """
     query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
     signature = hmac.new(
@@ -30,7 +29,7 @@ def sign_request(params: dict) -> str:
 
 def get_leverage_bracket(symbol: str):
     """
-    呼叫 /fapi/v1/leverageBracket 取得該幣種的槓桿分級表 (需簽名)。
+    1. 呼叫 /fapi/v1/leverageBracket 取得該幣種的槓桿分級表 (需簽名)。
     """
     endpoint = '/fapi/v1/leverageBracket'
     timestamp = int(time() * 1000)
@@ -43,7 +42,6 @@ def get_leverage_bracket(symbol: str):
         headers={'X-MBX-APIKEY': API_KEY},
         params=params
     )
-    
     response.raise_for_status() # 檢查 HTTP 錯誤
     data = response.json()
     
@@ -58,7 +56,7 @@ def get_leverage_bracket(symbol: str):
 
 def get_sub_account_position_risk(email: str, symbol: str):
     """
-    呼叫 /sapi/v1/sub-account/futures/positionRisk 取得子帳號倉位資訊 (需簽名與 SAPI 權限)。
+    2. 呼叫 /sapi/v1/sub-account/futures/positionRisk 取得子帳號倉位資訊 (需簽名與 SAPI 權限)。
     """
     endpoint = '/sapi/v1/sub-account/futures/positionRisk'
     timestamp = int(time() * 1000)
@@ -80,18 +78,19 @@ def get_sub_account_position_risk(email: str, symbol: str):
     doge_position = next((p for p in data if p['symbol'] == symbol), None)
     
     if doge_position:
-        # 返回當前倉位的名義價值 (取絕對值，因為風險限額是看總倉位)
+        # 返回當前倉位的名義價值 (取絕對值)
         return abs(float(doge_position.get('notional', 0)))
     
-    # 如果子帳號沒有該幣種倉位，名義價值為 0
     return 0.0
 
 def main():
     if not all([API_KEY, API_SECRET, SUB_ACCOUNT_EMAIL]):
-        print("錯誤：請在環境變數中設定 API_KEY, API_SECRET 和 SUB_ACCOUNT_EMAIL。")
+        print("錯誤：請在 Railway 環境變數中設定 API 資訊。")
         return
 
     try:
+        print("--- 正在查詢幣安合約槓桿資訊 ---")
+        
         # 1. 獲取風險限額分級表
         risk_levels = get_leverage_bracket(SYMBOL)
         
@@ -113,16 +112,14 @@ def main():
         
         if max_leverage > 0:
             print(f"**子帳號目前最大可設定槓桿倍數: {max_leverage} 倍**")
-            print("\n**重要提醒：**")
-            print("為解決 Apps Script 403 錯誤，請在您的部署環境 (如 Railway) 啟用靜態 IP，並將該 IP 加入幣安 API 白名單。")
         else:
-            print("倉位名義價值超過所有風險限額，請檢查倉位規模。")
+            print("倉位名義價值超過所有風險限額。")
             
     except requests.exceptions.HTTPError as e:
-        print(f"\n--- API 請求失敗 ---")
+        print(f"\n--- API 請求失敗 (HTTP Error) ---")
         print(f"HTTP 錯誤碼: {e.response.status_code}")
         print(f"幣安錯誤信息: {e.response.text}")
-        print("請檢查 API Key 權限（Futures, Sub Account）和 IP 白名單。")
+        print("請檢查 API Key 權限（Futures, Sub Account）和 IP 白名單是否設定正確。")
     except Exception as e:
         print(f"發生未知錯誤: {e}")
 
