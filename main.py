@@ -4,6 +4,7 @@ import requests
 from time import time
 import hmac
 import hashlib
+import urllib.parse # 引入這個函式庫來進行 URL 編碼
 
 # --- 從 Railway 環境變數中讀取 API 資訊 ---
 # 請確保您在 Railway 的 Variables 中設定了這些鍵值
@@ -18,32 +19,39 @@ BASE_SAPI_URL = 'https://api.binance.com' # 子帳號管理
 
 def sign_request(params: dict) -> str:
     """
-    使用 HMAC SHA256 簽名方法。
+    使用 HMAC SHA256 簽名方法：
+    1. 將參數編碼 (URL Encode) 成標準的查詢字串。
+    2. 進行 HMAC 簽名。
     """
-    query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
+    # 1. 對字典中的參數進行 URL 編碼，得到標準的 query string
+    query_string = urllib.parse.urlencode(params) 
+    
+    # 2. 進行 HMAC SHA256 簽名
     signature = hmac.new(
         API_SECRET.encode('utf-8'),
         query_string.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
+    
     return signature
 
-def fetch_api(url, params, headers, use_sapi=False):
+def fetch_api(url, params, headers):
     """ 統一的 API 請求發送函式，處理簽名和錯誤。 """
     
-    # 計算簽名
-    if API_SECRET:
-        params['timestamp'] = int(time() * 1000)
-        params['signature'] = sign_request(params)
-
+    # 1. 加入 timestamp
+    params['timestamp'] = int(time() * 1000)
+    
+    # 2. 計算並加入簽名
+    params['signature'] = sign_request(params)
+    
     response = requests.get(
         url,
         headers=headers,
-        params=params,
-        timeout=15 # 設定超時時間
+        params=params, # requests 函式庫會自動將參數組合成 URL
+        timeout=15 
     )
     
-    # 檢查並拋出 HTTP 錯誤
+    # 檢查並拋出 HTTP 錯誤 (這是解決 400, 401, 403 錯誤的關鍵)
     response.raise_for_status() 
     return response.json()
 
@@ -78,7 +86,7 @@ def get_sub_account_position_risk(email: str, symbol: str):
     # futuresType=1 代表 USDT-Margined (U本位) 合約
     params = {'email': email, 'futuresType': 1}
     
-    data = fetch_api(url, params, headers, use_sapi=True)
+    data = fetch_api(url, params, headers)
     
     # 找出目標交易對的倉位資訊
     doge_position = next((p for p in data if p['symbol'] == symbol), None)
@@ -122,9 +130,9 @@ def main():
         # 捕獲所有 4xx 或 5xx 錯誤
         print(f"\n--- API 請求失敗 (HTTP Error {e.response.status_code}) ---")
         print(f"**幣安返回錯誤信息:** {e.response.text.strip()}")
-        print("\n請檢查以下兩點：")
-        print("1. **API 權限：** 確保主帳號 API Key 啟用了 **Enable Futures** 和 **Enable Sub Account**。")
-        print("2. **API Secret：** 確保 Railway 環境變數中的 **API_SECRET** 複製無誤。")
+        print("\n請務必檢查：")
+        print("1. **API SECRET**：確保 Railway 環境變數中的 Secret Key **完全正確且無多餘空格**。")
+        print("2. **API 權限**：確保主帳號 API Key 啟用了 **Enable Futures** 和 **Enable Sub Account** 權限。")
     except Exception as e:
         print(f"發生未知錯誤: {e}")
 
